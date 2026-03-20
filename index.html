@@ -127,7 +127,8 @@
       speed: document.getElementById('speed'),
       fuel: document.getElementById('fuel'),
       mode: document.getElementById('mode'),
-      status: document.getElementById('status')
+      status: document.getElementById('status'),
+      throttle: document.getElementById('throttle')
     };
 
     const state = {
@@ -139,6 +140,16 @@
       moon: null,
       stars: Array.from({ length: 120 }, () => ({ x: Math.random() * 900, y: Math.random() * 1200, s: Math.random() * 2 + 0.4 }))
     };
+
+    function clamp01(value) {
+      if (!Number.isFinite(value)) return 0;
+      return Math.max(0, Math.min(1, value));
+    }
+
+    function setThrottle(value) {
+      state.throttle = clamp01(value);
+      ui.throttle.value = Math.round(state.throttle * 100);
+    }
 
     function resetGame() {
       state.launched = false;
@@ -174,8 +185,8 @@
     holdButton('left', 'left');
     holdButton('right', 'right');
 
-    document.getElementById('throttle').addEventListener('input', (e) => {
-      state.throttle = Number(e.target.value) / 100;
+    ui.throttle.addEventListener('input', (e) => {
+      setThrottle(Number(e.target.value) / 100);
     });
 
     document.getElementById('autopilot').addEventListener('click', () => {
@@ -184,6 +195,7 @@
     });
 
     document.getElementById('launch').addEventListener('click', () => {
+      if (!state.rocket) return;
       state.launched = true;
       if (state.rocket.y > 1078) {
         state.rocket.vy = -2;
@@ -191,14 +203,14 @@
     });
 
     document.getElementById('boost').addEventListener('click', () => {
-      state.throttle = Math.min(1, state.throttle + 0.25);
-      document.getElementById('throttle').value = Math.round(state.throttle * 100);
+      setThrottle(state.throttle + 0.25);
     });
 
     document.getElementById('reset').addEventListener('click', resetGame);
 
     function physics(dt) {
       const r = state.rocket;
+      if (!r || !state.moon || !Number.isFinite(dt) || dt <= 0) return;
       if (!state.launched || r.landed || r.crashed) return;
 
       const g = 0.042;
@@ -216,8 +228,7 @@
           r.angle += Math.max(-0.03, Math.min(0.03, delta));
 
           const dist = Math.hypot(dx, dy);
-          state.throttle = dist > 260 ? 0.9 : 0.5;
-          document.getElementById('throttle').value = Math.round(state.throttle * 100);
+          setThrottle(dist > 260 ? 0.9 : 0.5);
         } else {
           if (state.controls.left) r.angle -= turnSpeed;
           if (state.controls.right) r.angle += turnSpeed;
@@ -330,6 +341,7 @@
 
     function updateHud() {
       const r = state.rocket;
+      if (!r) return;
       const alt = Math.max(0, Math.round((1080 - r.y) * 1.2));
       const speed = Math.round(Math.hypot(r.vx, r.vy) * 24);
       ui.altitude.textContent = `${alt} km`;
@@ -344,7 +356,8 @@
 
     let last = performance.now();
     function tick(now) {
-      const dt = Math.min(0.033, (now - last) / 1000);
+      const rawDt = (now - last) / 1000;
+      const dt = Number.isFinite(rawDt) ? Math.min(0.033, Math.max(0, rawDt)) : 0;
       last = now;
       physics(dt);
       draw();
