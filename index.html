@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Florida to Moon Rocket Demo</title>
+  <style>
+    :root {
+      --bg: #050816;
+      --panel: rgba(8, 14, 36, 0.86);
+      --text: #e8f0ff;
+      --accent: #49d2ff;
+      --warn: #ffb347;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: radial-gradient(circle at 20% 20%, #13254f, var(--bg) 45%);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      min-height: 100vh;
+      touch-action: none;
+      overscroll-behavior: none;
+    }
+    .app {
+      width: min(100vw, 860px);
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 10px;
+      padding: 10px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid rgba(136, 177, 255, 0.24);
+      border-radius: 14px;
+      padding: 10px 12px;
+      backdrop-filter: blur(3px);
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 1rem;
+      letter-spacing: 0.02em;
+    }
+    .hud {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      font-size: 0.85rem;
+    }
+    .metric { background: rgba(255, 255, 255, 0.06); border-radius: 10px; padding: 7px; }
+    .metric .label { opacity: 0.75; display: block; font-size: 0.72rem; }
+    .metric .value { font-weight: 700; }
+    canvas {
+      width: 100%;
+      height: 100%;
+      border-radius: 14px;
+      border: 1px solid rgba(136, 177, 255, 0.24);
+      background: linear-gradient(#07102d 0%, #090f27 70%, #0e1731 100%);
+      display: block;
+    }
+    .controls {
+      display: grid;
+      gap: 10px;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+    }
+    button {
+      border: 1px solid rgba(121, 177, 255, 0.35);
+      border-radius: 12px;
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.07);
+      min-height: 46px;
+      font-weight: 600;
+      font-size: 0.95rem;
+    }
+    button:active, button.active { background: rgba(73, 210, 255, 0.25); }
+    .slider-wrap { display: grid; gap: 4px; }
+    input[type='range'] { width: 100%; }
+    .status { color: var(--warn); font-size: 0.87rem; min-height: 1.2em; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="panel">
+      <h1>🚀 Florida → Moon (Mobile Demo)</h1>
+      <div class="hud">
+        <div class="metric"><span class="label">Altitude</span><span class="value" id="altitude">0 km</span></div>
+        <div class="metric"><span class="label">Speed</span><span class="value" id="speed">0 m/s</span></div>
+        <div class="metric"><span class="label">Fuel</span><span class="value" id="fuel">100%</span></div>
+        <div class="metric"><span class="label">Mode</span><span class="value" id="mode">Ready</span></div>
+      </div>
+    </div>
+
+    <canvas id="game" width="900" height="1200" aria-label="Rocket simulation"></canvas>
+
+    <div class="panel controls">
+      <div class="status" id="status">Tap Launch, then use Left/Right + Throttle to reach the moon.</div>
+      <div class="row">
+        <button id="left">⟲ Left</button>
+        <button id="autopilot">Autopilot: Off</button>
+        <button id="right">Right ⟳</button>
+      </div>
+      <div class="row">
+        <button id="launch">Launch</button>
+        <button id="reset">Reset</button>
+        <button id="boost">Boost +25%</button>
+      </div>
+      <div class="slider-wrap">
+        <label for="throttle">Throttle</label>
+        <input id="throttle" type="range" min="0" max="100" value="70" />
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+    const ui = {
+      altitude: document.getElementById('altitude'),
+      speed: document.getElementById('speed'),
+      fuel: document.getElementById('fuel'),
+      mode: document.getElementById('mode'),
+      status: document.getElementById('status')
+    };
+
+    const state = {
+      launched: false,
+      autopilot: false,
+      throttle: 0.7,
+      controls: { left: false, right: false },
+      rocket: null,
+      moon: null,
+      stars: Array.from({ length: 120 }, () => ({ x: Math.random() * 900, y: Math.random() * 1200, s: Math.random() * 2 + 0.4 }))
+    };
+
+    function resetGame() {
+      state.launched = false;
+      state.rocket = {
+        x: 140,
+        y: 1080,
+        vx: 0,
+        vy: 0,
+        angle: -Math.PI / 2,
+        fuel: 100,
+        landed: false,
+        crashed: false
+      };
+      state.moon = {
+        x: 700,
+        y: 220,
+        r: 56
+      };
+      ui.status.textContent = 'Tap Launch, then fly to the moon. Land gently to win.';
+      updateHud();
+    }
+
+    function holdButton(id, key) {
+      const el = document.getElementById(id);
+      const set = (v) => {
+        state.controls[key] = v;
+        el.classList.toggle('active', v);
+      };
+      ['pointerdown', 'touchstart'].forEach((eventName) => el.addEventListener(eventName, (e) => { e.preventDefault(); set(true); }));
+      ['pointerup', 'pointerleave', 'pointercancel', 'touchend', 'touchcancel'].forEach((eventName) => el.addEventListener(eventName, (e) => { e.preventDefault(); set(false); }));
+    }
+
+    holdButton('left', 'left');
+    holdButton('right', 'right');
+
+    document.getElementById('throttle').addEventListener('input', (e) => {
+      state.throttle = Number(e.target.value) / 100;
+    });
+
+    document.getElementById('autopilot').addEventListener('click', () => {
+      state.autopilot = !state.autopilot;
+      document.getElementById('autopilot').textContent = `Autopilot: ${state.autopilot ? 'On' : 'Off'}`;
+    });
+
+    document.getElementById('launch').addEventListener('click', () => {
+      state.launched = true;
+      if (state.rocket.y > 1078) {
+        state.rocket.vy = -2;
+      }
+    });
+
+    document.getElementById('boost').addEventListener('click', () => {
+      state.throttle = Math.min(1, state.throttle + 0.25);
+      document.getElementById('throttle').value = Math.round(state.throttle * 100);
+    });
+
+    document.getElementById('reset').addEventListener('click', resetGame);
+
+    function physics(dt) {
+      const r = state.rocket;
+      if (!state.launched || r.landed || r.crashed) return;
+
+      const g = 0.042;
+      const turnSpeed = 0.028;
+      const thrustPower = 0.105;
+
+      if (r.fuel > 0) {
+        if (state.autopilot) {
+          const dx = state.moon.x - r.x;
+          const dy = state.moon.y - r.y;
+          const targetAngle = Math.atan2(dy, dx);
+          let delta = targetAngle - r.angle;
+          while (delta > Math.PI) delta -= Math.PI * 2;
+          while (delta < -Math.PI) delta += Math.PI * 2;
+          r.angle += Math.max(-0.03, Math.min(0.03, delta));
+
+          const dist = Math.hypot(dx, dy);
+          state.throttle = dist > 260 ? 0.9 : 0.5;
+          document.getElementById('throttle').value = Math.round(state.throttle * 100);
+        } else {
+          if (state.controls.left) r.angle -= turnSpeed;
+          if (state.controls.right) r.angle += turnSpeed;
+        }
+
+        if (state.throttle > 0.02) {
+          const t = thrustPower * state.throttle;
+          r.vx += Math.cos(r.angle) * t;
+          r.vy += Math.sin(r.angle) * t;
+          r.fuel = Math.max(0, r.fuel - 0.07 * state.throttle * dt * 60);
+        }
+      }
+
+      r.vy += g;
+      r.vx *= 0.999;
+      r.vy *= 0.999;
+      r.x += r.vx * dt * 60;
+      r.y += r.vy * dt * 60;
+
+      const padY = 1080;
+      if (r.y >= padY) {
+        r.y = padY;
+        if (Math.hypot(r.vx, r.vy) > 3.8 && state.launched) {
+          r.crashed = true;
+          ui.status.textContent = 'Crash! Reduce speed before touching down. Tap Reset.';
+        } else if (state.launched) {
+          r.landed = true;
+          ui.status.textContent = 'Safe landing on Earth pad. Try for the Moon next!';
+        }
+        r.vx = 0;
+        r.vy = 0;
+      }
+
+      if (r.x < 30) { r.x = 30; r.vx *= -0.25; }
+      if (r.x > 870) { r.x = 870; r.vx *= -0.25; }
+      if (r.y < 20) { r.y = 20; r.vy *= -0.4; }
+
+      const dx = r.x - state.moon.x;
+      const dy = r.y - state.moon.y;
+      const moonDist = Math.hypot(dx, dy);
+      if (moonDist < state.moon.r + 10) {
+        const relSpeed = Math.hypot(r.vx, r.vy);
+        if (relSpeed < 2.2) {
+          r.landed = true;
+          state.launched = false;
+          ui.status.textContent = '🎉 Moon landing successful! You can Reset and try manual mode.';
+        } else {
+          r.crashed = true;
+          ui.status.textContent = 'Too fast at moon contact. Slow down and try again.';
+        }
+        r.vx *= 0.2;
+        r.vy *= 0.2;
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      for (const star of state.stars) {
+        ctx.fillStyle = 'rgba(255,255,255,0.85)';
+        ctx.fillRect(star.x, star.y, star.s, star.s);
+      }
+
+      ctx.fillStyle = '#13345f';
+      ctx.beginPath();
+      ctx.arc(90, 1180, 250, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = '#7fd0ff';
+      ctx.beginPath();
+      ctx.arc(state.moon.x, state.moon.y, state.moon.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#1c3556';
+      ctx.fillText('Moon', state.moon.x - 18, state.moon.y + 4);
+
+      ctx.fillStyle = '#fcfcfc';
+      ctx.fillRect(80, 1076, 120, 8);
+      ctx.fillStyle = '#ff9447';
+      ctx.fillRect(104, 1062, 8, 14);
+
+      const r = state.rocket;
+      ctx.save();
+      ctx.translate(r.x, r.y);
+      ctx.rotate(r.angle + Math.PI / 2);
+
+      ctx.fillStyle = r.crashed ? '#ff6464' : '#ffffff';
+      ctx.beginPath();
+      ctx.moveTo(0, -22);
+      ctx.lineTo(12, 14);
+      ctx.lineTo(-12, 14);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = '#68b5ff';
+      ctx.fillRect(-4, -4, 8, 8);
+
+      if (state.launched && state.throttle > 0.05 && r.fuel > 0 && !r.crashed) {
+        ctx.fillStyle = '#ffb347';
+        ctx.beginPath();
+        ctx.moveTo(-6, 14);
+        ctx.lineTo(0, 14 + Math.random() * 24 + state.throttle * 18);
+        ctx.lineTo(6, 14);
+        ctx.fill();
+      }
+      ctx.restore();
+
+      ctx.fillStyle = 'rgba(232,240,255,0.85)';
+      ctx.fillText('Florida Launch Pad', 74, 1058);
+    }
+
+    function updateHud() {
+      const r = state.rocket;
+      const alt = Math.max(0, Math.round((1080 - r.y) * 1.2));
+      const speed = Math.round(Math.hypot(r.vx, r.vy) * 24);
+      ui.altitude.textContent = `${alt} km`;
+      ui.speed.textContent = `${speed} m/s`;
+      ui.fuel.textContent = `${Math.round(r.fuel)}%`;
+      if (r.crashed) ui.mode.textContent = 'Crashed';
+      else if (r.landed && !state.launched) ui.mode.textContent = 'Landed';
+      else if (state.autopilot) ui.mode.textContent = 'Autopilot';
+      else if (state.launched) ui.mode.textContent = 'Manual';
+      else ui.mode.textContent = 'Ready';
+    }
+
+    let last = performance.now();
+    function tick(now) {
+      const dt = Math.min(0.033, (now - last) / 1000);
+      last = now;
+      physics(dt);
+      draw();
+      updateHud();
+      requestAnimationFrame(tick);
+    }
+
+    resetGame();
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>
