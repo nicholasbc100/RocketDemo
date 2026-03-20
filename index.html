@@ -131,7 +131,8 @@
       score: document.getElementById('score'),
       objective: document.getElementById('objective'),
       mode: document.getElementById('mode'),
-      status: document.getElementById('status')
+      status: document.getElementById('status'),
+      throttle: document.getElementById('throttle')
     };
 
     const state = {
@@ -147,6 +148,45 @@
       pickups: [],
       stars: Array.from({ length: 120 }, () => ({ x: Math.random() * 900, y: Math.random() * 1200, s: Math.random() * 2 + 0.4 }))
     };
+    // Cap frame time to keep physics stable during rendering stalls (max 0.033s per step, ~30 FPS minimum).
+    const MAX_FRAME_TIME = 0.033;
+    // Ignore near-zero steps to avoid unnecessary physics updates when frame delta is effectively zero.
+    const MIN_PHYSICS_DT = 0.0001;
+
+    function clamp01(value) {
+      if (!Number.isFinite(value)) return 0;
+      return Math.max(0, Math.min(1, value));
+    }
+
+    function setThrottle(value) {
+      state.throttle = clamp01(value);
+      ui.throttle.value = Math.round(state.throttle * 100);
+    }
+
+    // Guard against corrupted numeric state (NaN/Infinity) before running launch/physics/HUD math.
+    function hasValidRocketKinematics(rocket) {
+      return rocket
+        && typeof rocket === 'object'
+        && Number.isFinite(rocket.x)
+        && Number.isFinite(rocket.y)
+        && Number.isFinite(rocket.vx)
+        && Number.isFinite(rocket.vy)
+        && Number.isFinite(rocket.angle);
+    }
+
+    function hasValidMoonState(moon) {
+      return moon
+        && typeof moon === 'object'
+        && Number.isFinite(moon.x)
+        && Number.isFinite(moon.y)
+        && Number.isFinite(moon.r)
+        && moon.r > 0;
+    }
+
+    function clampFrameTime(rawDt) {
+      if (!Number.isFinite(rawDt)) return 0;
+      return Math.min(MAX_FRAME_TIME, Math.max(0, rawDt));
+    }
 
     function createPickups() {
       state.pickups = Array.from({ length: 8 }, (_, i) => ({
@@ -196,8 +236,8 @@
     holdButton('left', 'left');
     holdButton('right', 'right');
 
-    document.getElementById('throttle').addEventListener('input', (e) => {
-      state.throttle = Number(e.target.value) / 100;
+    ui.throttle.addEventListener('input', (e) => {
+      setThrottle(Number(e.target.value) / 100);
     });
 
     document.getElementById('autopilot').addEventListener('click', () => {
@@ -206,6 +246,7 @@
     });
 
     document.getElementById('launch').addEventListener('click', () => {
+      if (!hasValidRocketKinematics(state.rocket)) return;
       state.launched = true;
       state.mission = 'Collect or Land';
       if (state.rocket.y > 1078) {
@@ -214,8 +255,7 @@
     });
 
     document.getElementById('boost').addEventListener('click', () => {
-      state.throttle = Math.min(1, state.throttle + 0.25);
-      document.getElementById('throttle').value = Math.round(state.throttle * 100);
+      setThrottle(state.throttle + 0.25);
     });
 
     document.getElementById('reset').addEventListener('click', resetGame);
@@ -232,6 +272,9 @@
 
     function physics(dt) {
       const r = state.rocket;
+      if (!hasValidRocketKinematics(r)) return;
+      if (!hasValidMoonState(state.moon)) return;
+      if (dt < MIN_PHYSICS_DT) return;
       if (!state.launched || r.landed || r.crashed) return;
 
       const g = 0.042;
@@ -249,8 +292,7 @@
           r.angle += Math.max(-0.03, Math.min(0.03, delta));
 
           const dist = Math.hypot(dx, dy);
-          state.throttle = dist > 260 ? 0.9 : 0.5;
-          document.getElementById('throttle').value = Math.round(state.throttle * 100);
+          setThrottle(dist > 260 ? 0.9 : 0.5);
         } else {
           if (state.controls.left) r.angle -= turnSpeed;
           if (state.controls.right) r.angle += turnSpeed;
@@ -395,6 +437,7 @@
 
     function updateHud() {
       const r = state.rocket;
+      if (!hasValidRocketKinematics(r)) return;
       const alt = Math.max(0, Math.round((1080 - r.y) * 1.2));
       const speed = Math.round(Math.hypot(r.vx, r.vy) * 24);
       ui.altitude.textContent = `${alt} km`;
@@ -411,7 +454,8 @@
 
     let last = performance.now();
     function tick(now) {
-      const dt = Math.min(0.033, (now - last) / 1000);
+      const rawDt = (now - last) / 1000;
+      const dt = clampFrameTime(rawDt);
       last = now;
       physics(dt);
       draw();
