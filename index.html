@@ -46,7 +46,7 @@
     }
     .hud {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(3, 1fr);
       gap: 8px;
       font-size: 0.85rem;
     }
@@ -93,6 +93,8 @@
         <div class="metric"><span class="label">Altitude</span><span class="value" id="altitude">0 km</span></div>
         <div class="metric"><span class="label">Speed</span><span class="value" id="speed">0 m/s</span></div>
         <div class="metric"><span class="label">Fuel</span><span class="value" id="fuel">100%</span></div>
+        <div class="metric"><span class="label">Score</span><span class="value" id="score">0</span></div>
+        <div class="metric"><span class="label">Objective</span><span class="value" id="objective">Launch</span></div>
         <div class="metric"><span class="label">Mode</span><span class="value" id="mode">Ready</span></div>
       </div>
     </div>
@@ -126,6 +128,8 @@
       altitude: document.getElementById('altitude'),
       speed: document.getElementById('speed'),
       fuel: document.getElementById('fuel'),
+      score: document.getElementById('score'),
+      objective: document.getElementById('objective'),
       mode: document.getElementById('mode'),
       status: document.getElementById('status')
     };
@@ -135,13 +139,30 @@
       autopilot: false,
       throttle: 0.7,
       controls: { left: false, right: false },
+      score: 0,
+      combo: 1,
+      mission: 'Launch',
       rocket: null,
       moon: null,
+      pickups: [],
       stars: Array.from({ length: 120 }, () => ({ x: Math.random() * 900, y: Math.random() * 1200, s: Math.random() * 2 + 0.4 }))
     };
 
+    function createPickups() {
+      state.pickups = Array.from({ length: 8 }, (_, i) => ({
+        x: 250 + Math.random() * 560,
+        y: 180 + i * 95 + Math.random() * 55,
+        r: 11 + Math.random() * 5,
+        pulse: Math.random() * Math.PI * 2,
+        taken: false
+      }));
+    }
+
     function resetGame() {
       state.launched = false;
+      state.score = 0;
+      state.combo = 1;
+      state.mission = 'Launch';
       state.rocket = {
         x: 140,
         y: 1080,
@@ -157,6 +178,7 @@
         y: 220,
         r: 56
       };
+      createPickups();
       ui.status.textContent = 'Tap Launch, then fly to the moon. Land gently to win.';
       updateHud();
     }
@@ -185,6 +207,7 @@
 
     document.getElementById('launch').addEventListener('click', () => {
       state.launched = true;
+      state.mission = 'Collect or Land';
       if (state.rocket.y > 1078) {
         state.rocket.vy = -2;
       }
@@ -196,6 +219,16 @@
     });
 
     document.getElementById('reset').addEventListener('click', resetGame);
+
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'ArrowLeft') state.controls.left = true;
+      if (e.code === 'ArrowRight') state.controls.right = true;
+      if (e.code === 'Space') state.launched = true;
+    });
+    window.addEventListener('keyup', (e) => {
+      if (e.code === 'ArrowLeft') state.controls.left = false;
+      if (e.code === 'ArrowRight') state.controls.right = false;
+    });
 
     function physics(dt) {
       const r = state.rocket;
@@ -242,9 +275,11 @@
         r.y = padY;
         if (Math.hypot(r.vx, r.vy) > 3.8 && state.launched) {
           r.crashed = true;
+          state.combo = 1;
           ui.status.textContent = 'Crash! Reduce speed before touching down. Tap Reset.';
         } else if (state.launched) {
           r.landed = true;
+          state.score += 300;
           ui.status.textContent = 'Safe landing on Earth pad. Try for the Moon next!';
         }
         r.vx = 0;
@@ -263,13 +298,28 @@
         if (relSpeed < 2.2) {
           r.landed = true;
           state.launched = false;
-          ui.status.textContent = '🎉 Moon landing successful! You can Reset and try manual mode.';
+          state.mission = 'Mission Complete';
+          state.score += 1000 + (state.combo * 100);
+          ui.status.textContent = '🎉 Moon landing successful! You nailed it. Reset for a new run.';
         } else {
           r.crashed = true;
+          state.combo = 1;
           ui.status.textContent = 'Too fast at moon contact. Slow down and try again.';
         }
         r.vx *= 0.2;
         r.vy *= 0.2;
+      }
+
+      for (const pickup of state.pickups) {
+        if (pickup.taken) continue;
+        const d = Math.hypot(r.x - pickup.x, r.y - pickup.y);
+        if (d < pickup.r + 13) {
+          pickup.taken = true;
+          state.score += 80 * state.combo;
+          state.combo = Math.min(8, state.combo + 1);
+          r.fuel = Math.min(100, r.fuel + 6);
+          ui.status.textContent = `✨ Stellar pickup! Combo x${state.combo}`;
+        }
       }
     }
 
@@ -279,6 +329,21 @@
       for (const star of state.stars) {
         ctx.fillStyle = 'rgba(255,255,255,0.85)';
         ctx.fillRect(star.x, star.y, star.s, star.s);
+      }
+
+      for (const pickup of state.pickups) {
+        if (pickup.taken) continue;
+        pickup.pulse += 0.06;
+        const pulse = Math.sin(pickup.pulse) * 2;
+        ctx.strokeStyle = 'rgba(73, 210, 255, 0.9)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(pickup.x, pickup.y, pickup.r + pulse, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(145, 223, 255, 0.25)';
+        ctx.beginPath();
+        ctx.arc(pickup.x, pickup.y, pickup.r - 2, 0, Math.PI * 2);
+        ctx.fill();
       }
 
       ctx.fillStyle = '#13345f';
@@ -335,6 +400,8 @@
       ui.altitude.textContent = `${alt} km`;
       ui.speed.textContent = `${speed} m/s`;
       ui.fuel.textContent = `${Math.round(r.fuel)}%`;
+      ui.score.textContent = `${Math.round(state.score)} (x${state.combo})`;
+      ui.objective.textContent = state.mission;
       if (r.crashed) ui.mode.textContent = 'Crashed';
       else if (r.landed && !state.launched) ui.mode.textContent = 'Landed';
       else if (state.autopilot) ui.mode.textContent = 'Autopilot';
