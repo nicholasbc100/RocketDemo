@@ -70,6 +70,7 @@
       grid-template-columns: 1fr 1fr 1fr;
       gap: 8px;
     }
+    .row.single { grid-template-columns: 1fr; }
     button {
       border: 1px solid rgba(121, 177, 255, 0.35);
       border-radius: 12px;
@@ -113,6 +114,9 @@
         <button id="reset">Reset</button>
         <button id="boost">Boost +25%</button>
       </div>
+      <div class="row single">
+        <button id="shoot" aria-label="Shoot meteors using X key or this button">Shoot Meteors (X)</button>
+      </div>
       <div class="slider-wrap">
         <label for="throttle">Throttle</label>
         <input id="throttle" type="range" min="0" max="100" value="70" />
@@ -145,13 +149,39 @@
       mission: 'Launch',
       rocket: null,
       moon: null,
+      earth: null,
       pickups: [],
+      meteors: [],
+      shots: [],
+      shootCooldown: 0,
       stars: Array.from({ length: 120 }, () => ({ x: Math.random() * 900, y: Math.random() * 1200, s: Math.random() * 2 + 0.4 }))
     };
     // Cap frame time to keep physics stable during rendering stalls (max 0.033s per step, ~30 FPS minimum).
     const MAX_FRAME_TIME = 0.033;
     // Ignore near-zero steps to avoid unnecessary physics updates when frame delta is effectively zero.
     const MIN_PHYSICS_DT = 0.0001;
+    const PHYSICS_FRAME_RATE = 60;
+    const PLAYFIELD_MARGIN = 40;
+    const PLAYFIELD_MIN_X = -PLAYFIELD_MARGIN;
+    const PLAYFIELD_MAX_X = 900 + PLAYFIELD_MARGIN;
+    const PLAYFIELD_MIN_Y = -PLAYFIELD_MARGIN;
+    const PLAYFIELD_MAX_Y = 1200 + PLAYFIELD_MARGIN;
+    const METEOR_MIN_SPEED = 1.4;
+    const METEOR_SPEED_RANGE = 1.8;
+    const METEOR_WOBBLE_AMPLITUDE = 0.8;
+    const METEOR_SPAWN_Y_MIN = 90;
+    const METEOR_SPAWN_Y_RANGE = 920;
+    const METEOR_INITIAL_SPAWN_X_MIN = 90;
+    const METEOR_INITIAL_SPAWN_X_RANGE = 760;
+    const METEOR_RESPAWN_X_OFFSET = 30;
+    const METEOR_RESPAWN_X_RANGE = 300;
+    const SHOT_SPAWN_OFFSET = 20;
+    const SHOT_SPEED = 8.5;
+    const SHOT_LIFETIME = 1.15;
+    const SHOT_COOLDOWN = 0.2;
+    const ROCKET_COLLISION_RADIUS = 12;
+    const SHOT_COLLISION_RADIUS = 3;
+    const METEOR_DESTROY_SCORE = 120;
 
     function clamp01(value) {
       if (!Number.isFinite(value)) return 0;
@@ -198,6 +228,70 @@
       }));
     }
 
+    function createEarthTexture() {
+      return {
+        x: 90,
+        y: 1180,
+        r: 250,
+        bands: Array.from({ length: 6 }, () => ({
+          y: -170 + Math.random() * 330,
+          h: 16 + Math.random() * 22,
+          color: `rgba(110, 183, 255, ${0.08 + Math.random() * 0.12})`
+        })),
+        continents: Array.from({ length: 9 }, () => ({
+          x: -130 + Math.random() * 260,
+          y: -170 + Math.random() * 260,
+          rx: 26 + Math.random() * 55,
+          ry: 14 + Math.random() * 35,
+          rot: Math.random() * Math.PI
+        })),
+        clouds: Array.from({ length: 16 }, () => {
+          const len = 35 + Math.random() * 70;
+          return {
+            x: -180 + Math.random() * 360,
+            y: -180 + Math.random() * 320,
+            len,
+            rot: Math.random() * Math.PI * 2,
+            radius: len * 0.5
+          };
+        })
+      };
+    }
+
+    function resetMeteor(meteor, fromRight = true) {
+      meteor.r = 12 + Math.random() * 10;
+      meteor.x = fromRight
+        ? PLAYFIELD_MAX_X - 10 + METEOR_RESPAWN_X_OFFSET + Math.random() * METEOR_RESPAWN_X_RANGE
+        : METEOR_INITIAL_SPAWN_X_MIN + Math.random() * METEOR_INITIAL_SPAWN_X_RANGE;
+      meteor.y = METEOR_SPAWN_Y_MIN + Math.random() * METEOR_SPAWN_Y_RANGE;
+      meteor.vx = -(METEOR_MIN_SPEED + Math.random() * METEOR_SPEED_RANGE);
+      meteor.phase = Math.random() * Math.PI * 2;
+      meteor.wobble = 0.02 + Math.random() * 0.035;
+      meteor.alive = true;
+    }
+
+    function createMeteors() {
+      state.meteors = Array.from({ length: 7 }, () => {
+        const meteor = {};
+        resetMeteor(meteor, false);
+        return meteor;
+      });
+    }
+
+    function shoot() {
+      const r = state.rocket;
+      if (!hasValidRocketKinematics(r)) return;
+      if (state.shootCooldown > 0 || r.crashed) return;
+      state.shots.push({
+        x: r.x + Math.cos(r.angle) * SHOT_SPAWN_OFFSET,
+        y: r.y + Math.sin(r.angle) * SHOT_SPAWN_OFFSET,
+        vx: r.vx + Math.cos(r.angle) * SHOT_SPEED,
+        vy: r.vy + Math.sin(r.angle) * SHOT_SPEED,
+        life: SHOT_LIFETIME
+      });
+      state.shootCooldown = SHOT_COOLDOWN;
+    }
+
     function resetGame() {
       state.launched = false;
       state.score = 0;
@@ -218,7 +312,11 @@
         y: 220,
         r: 56
       };
+      state.earth = createEarthTexture();
+      state.shots = [];
+      state.shootCooldown = 0;
       createPickups();
+      createMeteors();
       ui.status.textContent = 'Tap Launch, then fly to the moon. Land gently to win.';
       updateHud();
     }
@@ -257,6 +355,7 @@
     document.getElementById('boost').addEventListener('click', () => {
       setThrottle(state.throttle + 0.25);
     });
+    document.getElementById('shoot').addEventListener('click', shoot);
 
     document.getElementById('reset').addEventListener('click', resetGame);
 
@@ -264,6 +363,7 @@
       if (e.code === 'ArrowLeft') state.controls.left = true;
       if (e.code === 'ArrowRight') state.controls.right = true;
       if (e.code === 'Space') state.launched = true;
+      if (e.code === 'KeyX') shoot();
     });
     window.addEventListener('keyup', (e) => {
       if (e.code === 'ArrowLeft') state.controls.left = false;
@@ -275,6 +375,7 @@
       if (!hasValidRocketKinematics(r)) return;
       if (!hasValidMoonState(state.moon)) return;
       if (dt < MIN_PHYSICS_DT) return;
+      state.shootCooldown = Math.max(0, state.shootCooldown - dt);
       if (!state.launched || r.landed || r.crashed) return;
 
       const g = 0.042;
@@ -302,15 +403,15 @@
           const t = thrustPower * state.throttle;
           r.vx += Math.cos(r.angle) * t;
           r.vy += Math.sin(r.angle) * t;
-          r.fuel = Math.max(0, r.fuel - 0.07 * state.throttle * dt * 60);
+          r.fuel = Math.max(0, r.fuel - 0.07 * state.throttle * dt * PHYSICS_FRAME_RATE);
         }
       }
 
       r.vy += g;
       r.vx *= 0.999;
       r.vy *= 0.999;
-      r.x += r.vx * dt * 60;
-      r.y += r.vy * dt * 60;
+      r.x += r.vx * dt * PHYSICS_FRAME_RATE;
+      r.y += r.vy * dt * PHYSICS_FRAME_RATE;
 
       const padY = 1080;
       if (r.y >= padY) {
@@ -363,6 +464,48 @@
           ui.status.textContent = `✨ Stellar pickup! Combo x${state.combo}`;
         }
       }
+
+      for (const shot of state.shots) {
+        shot.x += shot.vx * dt * PHYSICS_FRAME_RATE;
+        shot.y += shot.vy * dt * PHYSICS_FRAME_RATE;
+        shot.life -= dt;
+      }
+      state.shots = state.shots.filter((shot) => (
+        shot.life > 0
+        && shot.x > PLAYFIELD_MIN_X
+        && shot.x < PLAYFIELD_MAX_X
+        && shot.y > PLAYFIELD_MIN_Y
+        && shot.y < PLAYFIELD_MAX_Y
+      ));
+
+      for (const meteor of state.meteors) {
+        if (!meteor.alive) continue;
+        meteor.x += meteor.vx * dt * PHYSICS_FRAME_RATE;
+        meteor.phase += meteor.wobble * dt * PHYSICS_FRAME_RATE;
+        meteor.y += Math.sin(meteor.phase) * METEOR_WOBBLE_AMPLITUDE;
+
+        if (meteor.x < PLAYFIELD_MIN_X) {
+          resetMeteor(meteor, true);
+          continue;
+        }
+
+        if (Math.hypot(r.x - meteor.x, r.y - meteor.y) < meteor.r + ROCKET_COLLISION_RADIUS) {
+          r.crashed = true;
+          state.combo = 1;
+          state.launched = false;
+          ui.status.textContent = 'Meteor impact! Weave around them or shoot through them.';
+        }
+
+        for (const shot of state.shots) {
+          if (Math.hypot(shot.x - meteor.x, shot.y - meteor.y) < meteor.r + SHOT_COLLISION_RADIUS) {
+            state.score += METEOR_DESTROY_SCORE;
+            ui.status.textContent = '💥 Meteor destroyed!';
+            resetMeteor(meteor, true);
+            shot.life = 0;
+            break;
+          }
+        }
+      }
     }
 
     function draw() {
@@ -371,6 +514,27 @@
       for (const star of state.stars) {
         ctx.fillStyle = 'rgba(255,255,255,0.85)';
         ctx.fillRect(star.x, star.y, star.s, star.s);
+      }
+
+      for (const meteor of state.meteors) {
+        if (!meteor.alive) continue;
+        const rockGradient = ctx.createRadialGradient(meteor.x - meteor.r * 0.3, meteor.y - meteor.r * 0.3, 2, meteor.x, meteor.y, meteor.r + 2);
+        rockGradient.addColorStop(0, '#b58763');
+        rockGradient.addColorStop(1, '#5c3f31');
+        ctx.fillStyle = rockGradient;
+        ctx.beginPath();
+        ctx.arc(meteor.x, meteor.y, meteor.r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(46, 28, 20, 0.35)';
+        ctx.beginPath();
+        ctx.arc(meteor.x + meteor.r * 0.25, meteor.y - meteor.r * 0.2, meteor.r * 0.28, 0, Math.PI * 2);
+        ctx.arc(meteor.x - meteor.r * 0.2, meteor.y + meteor.r * 0.1, meteor.r * 0.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.fillStyle = '#ffd48a';
+      for (const shot of state.shots) {
+        ctx.fillRect(shot.x - 1.5, shot.y - 1.5, 3, 3);
       }
 
       for (const pickup of state.pickups) {
@@ -388,10 +552,49 @@
         ctx.fill();
       }
 
-      ctx.fillStyle = '#13345f';
+      const earth = state.earth;
+      ctx.save();
+      ctx.translate(earth.x, earth.y);
       ctx.beginPath();
-      ctx.arc(90, 1180, 250, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.arc(0, 0, earth.r, 0, Math.PI * 2);
+      ctx.clip();
+      const oceanGradient = ctx.createRadialGradient(-40, -80, 40, 0, 0, earth.r + 40);
+      oceanGradient.addColorStop(0, '#3ba6ff');
+      oceanGradient.addColorStop(0.45, '#1f6db5');
+      oceanGradient.addColorStop(1, '#0f345d');
+      ctx.fillStyle = oceanGradient;
+      ctx.fillRect(-earth.r, -earth.r, earth.r * 2, earth.r * 2);
+      for (const band of earth.bands) {
+        ctx.fillStyle = band.color;
+        ctx.fillRect(-earth.r, band.y, earth.r * 2, band.h);
+      }
+      ctx.fillStyle = 'rgba(66, 136, 72, 0.88)';
+      for (const c of earth.continents) {
+        ctx.save();
+        ctx.translate(c.x, c.y);
+        ctx.rotate(c.rot);
+        ctx.beginPath();
+        ctx.ellipse(0, 0, c.rx, c.ry, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+      ctx.strokeStyle = 'rgba(255,255,255,0.42)';
+      ctx.lineWidth = 3;
+      for (const cloud of earth.clouds) {
+        ctx.save();
+        ctx.translate(cloud.x, cloud.y);
+        ctx.rotate(cloud.rot);
+        ctx.beginPath();
+        ctx.arc(0, 0, cloud.radius, 0.2, Math.PI - 0.2);
+        ctx.stroke();
+        ctx.restore();
+      }
+      ctx.restore();
+      ctx.strokeStyle = 'rgba(129, 214, 255, 0.45)';
+      ctx.lineWidth = 8;
+      ctx.beginPath();
+      ctx.arc(earth.x, earth.y, earth.r + 3, 0, Math.PI * 2);
+      ctx.stroke();
 
       ctx.fillStyle = '#7fd0ff';
       ctx.beginPath();
