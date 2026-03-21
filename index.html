@@ -115,7 +115,7 @@
         <button id="boost">Boost +25%</button>
       </div>
       <div class="row single">
-        <button id="shoot">Shoot Meteor (X)</button>
+        <button id="shoot" aria-label="Shoot meteors using X key or this button">Shoot Meteors (X)</button>
       </div>
       <div class="slider-wrap">
         <label for="throttle">Throttle</label>
@@ -160,6 +160,28 @@
     const MAX_FRAME_TIME = 0.033;
     // Ignore near-zero steps to avoid unnecessary physics updates when frame delta is effectively zero.
     const MIN_PHYSICS_DT = 0.0001;
+    const PHYSICS_FRAME_RATE = 60;
+    const PLAYFIELD_MARGIN = 40;
+    const PLAYFIELD_MIN_X = -PLAYFIELD_MARGIN;
+    const PLAYFIELD_MAX_X = 900 + PLAYFIELD_MARGIN;
+    const PLAYFIELD_MIN_Y = -PLAYFIELD_MARGIN;
+    const PLAYFIELD_MAX_Y = 1200 + PLAYFIELD_MARGIN;
+    const METEOR_MIN_SPEED = 1.4;
+    const METEOR_SPEED_RANGE = 1.8;
+    const METEOR_WOBBLE_AMPLITUDE = 0.8;
+    const METEOR_SPAWN_Y_MIN = 90;
+    const METEOR_SPAWN_Y_RANGE = 920;
+    const METEOR_INITIAL_SPAWN_X_MIN = 90;
+    const METEOR_INITIAL_SPAWN_X_RANGE = 760;
+    const METEOR_RESPAWN_X_OFFSET = 30;
+    const METEOR_RESPAWN_X_RANGE = 300;
+    const SHOT_SPAWN_OFFSET = 20;
+    const SHOT_SPEED = 8.5;
+    const SHOT_LIFETIME = 1.15;
+    const SHOT_COOLDOWN = 0.2;
+    const ROCKET_COLLISION_RADIUS = 12;
+    const SHOT_COLLISION_RADIUS = 3;
+    const METEOR_DESTROY_SCORE = 120;
 
     function clamp01(value) {
       if (!Number.isFinite(value)) return 0;
@@ -214,7 +236,7 @@
         bands: Array.from({ length: 6 }, () => ({
           y: -170 + Math.random() * 330,
           h: 16 + Math.random() * 22,
-          a: 0.08 + Math.random() * 0.12
+          color: `rgba(110, 183, 255, ${0.08 + Math.random() * 0.12})`
         })),
         continents: Array.from({ length: 9 }, () => ({
           x: -130 + Math.random() * 260,
@@ -223,20 +245,26 @@
           ry: 14 + Math.random() * 35,
           rot: Math.random() * Math.PI
         })),
-        clouds: Array.from({ length: 16 }, () => ({
-          x: -180 + Math.random() * 360,
-          y: -180 + Math.random() * 320,
-          len: 35 + Math.random() * 70,
-          rot: Math.random() * Math.PI * 2
-        }))
+        clouds: Array.from({ length: 16 }, () => {
+          const len = 35 + Math.random() * 70;
+          return {
+            x: -180 + Math.random() * 360,
+            y: -180 + Math.random() * 320,
+            len,
+            rot: Math.random() * Math.PI * 2,
+            radius: len * 0.5
+          };
+        })
       };
     }
 
     function resetMeteor(meteor, fromRight = true) {
       meteor.r = 12 + Math.random() * 10;
-      meteor.x = fromRight ? 930 + Math.random() * 300 : 90 + Math.random() * 760;
-      meteor.y = 90 + Math.random() * 920;
-      meteor.vx = -(1.4 + Math.random() * 1.8);
+      meteor.x = fromRight
+        ? PLAYFIELD_MAX_X - 10 + METEOR_RESPAWN_X_OFFSET + Math.random() * METEOR_RESPAWN_X_RANGE
+        : METEOR_INITIAL_SPAWN_X_MIN + Math.random() * METEOR_INITIAL_SPAWN_X_RANGE;
+      meteor.y = METEOR_SPAWN_Y_MIN + Math.random() * METEOR_SPAWN_Y_RANGE;
+      meteor.vx = -(METEOR_MIN_SPEED + Math.random() * METEOR_SPEED_RANGE);
       meteor.phase = Math.random() * Math.PI * 2;
       meteor.wobble = 0.02 + Math.random() * 0.035;
       meteor.alive = true;
@@ -255,13 +283,13 @@
       if (!hasValidRocketKinematics(r)) return;
       if (state.shootCooldown > 0 || r.crashed) return;
       state.shots.push({
-        x: r.x + Math.cos(r.angle) * 20,
-        y: r.y + Math.sin(r.angle) * 20,
-        vx: r.vx + Math.cos(r.angle) * 8.5,
-        vy: r.vy + Math.sin(r.angle) * 8.5,
-        life: 1.15
+        x: r.x + Math.cos(r.angle) * SHOT_SPAWN_OFFSET,
+        y: r.y + Math.sin(r.angle) * SHOT_SPAWN_OFFSET,
+        vx: r.vx + Math.cos(r.angle) * SHOT_SPEED,
+        vy: r.vy + Math.sin(r.angle) * SHOT_SPEED,
+        life: SHOT_LIFETIME
       });
-      state.shootCooldown = 0.2;
+      state.shootCooldown = SHOT_COOLDOWN;
     }
 
     function resetGame() {
@@ -375,15 +403,15 @@
           const t = thrustPower * state.throttle;
           r.vx += Math.cos(r.angle) * t;
           r.vy += Math.sin(r.angle) * t;
-          r.fuel = Math.max(0, r.fuel - 0.07 * state.throttle * dt * 60);
+          r.fuel = Math.max(0, r.fuel - 0.07 * state.throttle * dt * PHYSICS_FRAME_RATE);
         }
       }
 
       r.vy += g;
       r.vx *= 0.999;
       r.vy *= 0.999;
-      r.x += r.vx * dt * 60;
-      r.y += r.vy * dt * 60;
+      r.x += r.vx * dt * PHYSICS_FRAME_RATE;
+      r.y += r.vy * dt * PHYSICS_FRAME_RATE;
 
       const padY = 1080;
       if (r.y >= padY) {
@@ -438,24 +466,30 @@
       }
 
       for (const shot of state.shots) {
-        shot.x += shot.vx * dt * 60;
-        shot.y += shot.vy * dt * 60;
+        shot.x += shot.vx * dt * PHYSICS_FRAME_RATE;
+        shot.y += shot.vy * dt * PHYSICS_FRAME_RATE;
         shot.life -= dt;
       }
-      state.shots = state.shots.filter((shot) => shot.life > 0 && shot.x > -40 && shot.x < 940 && shot.y > -40 && shot.y < 1240);
+      state.shots = state.shots.filter((shot) => (
+        shot.life > 0
+        && shot.x > PLAYFIELD_MIN_X
+        && shot.x < PLAYFIELD_MAX_X
+        && shot.y > PLAYFIELD_MIN_Y
+        && shot.y < PLAYFIELD_MAX_Y
+      ));
 
       for (const meteor of state.meteors) {
         if (!meteor.alive) continue;
-        meteor.x += meteor.vx * dt * 60;
-        meteor.phase += meteor.wobble * dt * 60;
-        meteor.y += Math.sin(meteor.phase) * 0.8;
+        meteor.x += meteor.vx * dt * PHYSICS_FRAME_RATE;
+        meteor.phase += meteor.wobble * dt * PHYSICS_FRAME_RATE;
+        meteor.y += Math.sin(meteor.phase) * METEOR_WOBBLE_AMPLITUDE;
 
-        if (meteor.x < -40) {
+        if (meteor.x < PLAYFIELD_MIN_X) {
           resetMeteor(meteor, true);
           continue;
         }
 
-        if (Math.hypot(r.x - meteor.x, r.y - meteor.y) < meteor.r + 12) {
+        if (Math.hypot(r.x - meteor.x, r.y - meteor.y) < meteor.r + ROCKET_COLLISION_RADIUS) {
           r.crashed = true;
           state.combo = 1;
           state.launched = false;
@@ -463,8 +497,8 @@
         }
 
         for (const shot of state.shots) {
-          if (Math.hypot(shot.x - meteor.x, shot.y - meteor.y) < meteor.r + 3) {
-            state.score += 120;
+          if (Math.hypot(shot.x - meteor.x, shot.y - meteor.y) < meteor.r + SHOT_COLLISION_RADIUS) {
+            state.score += METEOR_DESTROY_SCORE;
             ui.status.textContent = '💥 Meteor destroyed!';
             resetMeteor(meteor, true);
             shot.life = 0;
@@ -531,7 +565,7 @@
       ctx.fillStyle = oceanGradient;
       ctx.fillRect(-earth.r, -earth.r, earth.r * 2, earth.r * 2);
       for (const band of earth.bands) {
-        ctx.fillStyle = `rgba(110, 183, 255, ${band.a.toFixed(3)})`;
+        ctx.fillStyle = band.color;
         ctx.fillRect(-earth.r, band.y, earth.r * 2, band.h);
       }
       ctx.fillStyle = 'rgba(66, 136, 72, 0.88)';
@@ -551,7 +585,7 @@
         ctx.translate(cloud.x, cloud.y);
         ctx.rotate(cloud.rot);
         ctx.beginPath();
-        ctx.arc(0, 0, cloud.len * 0.5, 0.2, Math.PI - 0.2);
+        ctx.arc(0, 0, cloud.radius, 0.2, Math.PI - 0.2);
         ctx.stroke();
         ctx.restore();
       }
